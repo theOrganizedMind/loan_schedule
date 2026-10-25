@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import messagebox, filedialog
 import pandas as pd
 from datetime import datetime, timedelta
 
@@ -14,6 +14,17 @@ from datetime import datetime, timedelta
 # ========================================================================== #
 
 # ========================================================================== #
+
+def _validate_loan_inputs(principal, annual_rate, years, start_date):
+    if principal <= 0:
+        raise ValueError("Loan amount must be greater than 0.")
+    if annual_rate < 0:
+        raise ValueError("Annual interest rate cannot be negative.")
+    if years <= 0:
+        raise ValueError("Loan term (years) must be greater than 0.")
+    if not isinstance(start_date, datetime):
+        raise TypeError("Start date must be a datetime object.")
+
 
 def calculate_schedule(principal, annual_rate, years, start_date):
     """
@@ -30,10 +41,14 @@ def calculate_schedule(principal, annual_rate, years, start_date):
             'Payment #', 'Date', 'Payment', 'Principal Paid', 'Interest Paid', 
             'Remaining Balance'
     """
+    _validate_loan_inputs(principal, annual_rate, years, start_date)
     monthly_rate = annual_rate / 12 / 100
     n_payments = years * 12
-    # Monthly payment formula
-    payment = principal * (monthly_rate * (1 + monthly_rate) ** n_payments) / ((1 + monthly_rate) ** n_payments - 1)
+    if monthly_rate == 0:
+        payment = principal / n_payments
+    else:
+        # Monthly payment formula
+        payment = principal * (monthly_rate * (1 + monthly_rate) ** n_payments) / ((1 + monthly_rate) ** n_payments - 1)
     schedule = []
     balance = principal
     payment_date = start_date
@@ -70,11 +85,21 @@ def show_schedule():
         rate = float(entry_rate.get())
         years = int(entry_years.get())
         start = datetime.strptime(entry_start.get(), "%Y-%m-%d")
-    except Exception as e:
-        messagebox.showerror("Input Error", f"Invalid input: {e}")
+        df = calculate_schedule(principal, rate, years, start)
+    except (ValueError, TypeError):
+        messagebox.showerror(
+            "Input Error",
+            "Please enter valid values:\n"
+            "- Loan amount must be greater than 0\n"
+            "- Interest rate cannot be negative\n"
+            "- Years must be a whole number greater than 0\n"
+            "- Date format must be YYYY-MM-DD",
+        )
+        return
+    except ArithmeticError:
+        messagebox.showerror("Calculation Error", "Unable to calculate schedule for the provided values.")
         return
 
-    df = calculate_schedule(principal, rate, years, start)
     text.delete("1.0", tk.END)
     text.insert(tk.END, f"{'Pmt#':<6}{'Date':<12}{'Payment':<12}{'Principal':<12}{'Interest':<12}{'Balance':<12}\n")
     text.insert(tk.END, "-"*66 + "\n")
@@ -96,36 +121,49 @@ def save_to_excel():
         return
     file_path = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel files", "*.xlsx")])
     if file_path:
-        show_schedule.df.to_excel(file_path, index=False)
+        try:
+            show_schedule.df.to_excel(file_path, index=False, engine="openpyxl")
+        except PermissionError:
+            messagebox.showerror("Save Error", "Cannot write to the selected file. Close it and try again.")
+            return
+        except (OSError, ValueError, ImportError):
+            messagebox.showerror("Save Error", "Failed to save schedule. Please choose another location and try again.")
+            return
         messagebox.showinfo("Saved", f"Schedule saved to {file_path}")
 
-root = tk.Tk()
-root.title("Loan Amortization Schedule")
-root.geometry("700x600")
+def main():
+    global entry_principal, entry_rate, entry_years, entry_start, text
+    root = tk.Tk()
+    root.title("Loan Amortization Schedule")
+    root.geometry("700x600")
 
-tk.Label(root, text="Loan Amount:").grid(row=0, column=0, sticky="e")
-entry_principal = tk.Entry(root)
-entry_principal.grid(row=0, column=1)
+    tk.Label(root, text="Loan Amount:").grid(row=0, column=0, sticky="e")
+    entry_principal = tk.Entry(root)
+    entry_principal.grid(row=0, column=1)
 
-tk.Label(root, text="Annual Interest Rate (%):").grid(row=1, column=0, sticky="e")
-entry_rate = tk.Entry(root)
-entry_rate.grid(row=1, column=1)
+    tk.Label(root, text="Annual Interest Rate (%):").grid(row=1, column=0, sticky="e")
+    entry_rate = tk.Entry(root)
+    entry_rate.grid(row=1, column=1)
 
-tk.Label(root, text="Term (years):").grid(row=2, column=0, sticky="e")
-entry_years = tk.Entry(root)
-entry_years.grid(row=2, column=1)
+    tk.Label(root, text="Term (years):").grid(row=2, column=0, sticky="e")
+    entry_years = tk.Entry(root)
+    entry_years.grid(row=2, column=1)
 
-tk.Label(root, text="Start Date (YYYY-MM-DD):").grid(row=3, column=0, sticky="e")
-entry_start = tk.Entry(root)
-entry_start.insert(0, datetime.today().strftime("%Y-%m-%d"))
-entry_start.grid(row=3, column=1)
+    tk.Label(root, text="Start Date (YYYY-MM-DD):").grid(row=3, column=0, sticky="e")
+    entry_start = tk.Entry(root)
+    entry_start.insert(0, datetime.today().strftime("%Y-%m-%d"))
+    entry_start.grid(row=3, column=1)
 
-tk.Button(root, text="Calculate Schedule", 
-          command=show_schedule).grid(row=4, column=1, columnspan=2, pady=10)
-tk.Button(root, text="Save to Excel", 
-          command=save_to_excel).grid(row=4, column=0, columnspan=2, pady=5)
+    tk.Button(root, text="Calculate Schedule", 
+              command=show_schedule).grid(row=4, column=1, columnspan=2, pady=10)
+    tk.Button(root, text="Save to Excel", 
+              command=save_to_excel).grid(row=4, column=0, columnspan=2, pady=5)
 
-text = tk.Text(root, width=80, height=25, font=("Consolas", 10))
-text.grid(row=6, column=0, columnspan=2, padx=60, pady=10)
+    text = tk.Text(root, width=80, height=25, font=("Consolas", 10))
+    text.grid(row=6, column=0, columnspan=2, padx=60, pady=10)
 
-root.mainloop()
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()

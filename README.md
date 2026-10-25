@@ -69,6 +69,15 @@ From the project root:
 python loan_schedule.py
 ```
 
+Run Tests
+---------
+
+From the project root:
+
+```bat
+pytest
+```
+
 How to Use
 ----------
 
@@ -88,7 +97,12 @@ Notes and Limitations
   which is an approximation and not true calendar-month handling.
 - Invalid input values (for example malformed dates or non-numeric amounts) 
   are shown via an error dialog.
+- Validation enforces:
+  - Loan amount > 0
+  - Interest rate >= 0
+  - Loan term (years) > 0
 - The schedule must be calculated before export is available.
+- A `0%` annual interest rate is supported and produces equal principal-only payments.
 
 Formula Used
 ------------
