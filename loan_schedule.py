@@ -1,3 +1,4 @@
+import calendar
 import csv
 import json
 import logging
@@ -90,6 +91,19 @@ def _validate_loan_inputs(principal: float, annual_rate: float, years: int, star
         raise TypeError("Start date must be a datetime object.")
 
 
+def next_monthly_payment_date(payment_date: datetime, anchor_day: int) -> datetime:
+    """Return the next monthly payment date while preserving the original day-of-month."""
+    if payment_date.month == 12:
+        next_year = payment_date.year + 1
+        next_month = 1
+    else:
+        next_year = payment_date.year
+        next_month = payment_date.month + 1
+    last_day = calendar.monthrange(next_year, next_month)[1]
+    next_day = min(anchor_day, last_day)
+    return payment_date.replace(year=next_year, month=next_month, day=next_day)
+
+
 def calculate_schedule(principal: float, annual_rate: float, years: int, start_date: datetime) -> pd.DataFrame:
     """Calculate and return a payment-by-payment amortization schedule as a DataFrame."""
     _validate_loan_inputs(principal, annual_rate, years, start_date)
@@ -103,6 +117,7 @@ def calculate_schedule(principal: float, annual_rate: float, years: int, start_d
     schedule = []
     balance = principal
     payment_date = start_date
+    anchor_day = start_date.day
     for i in range(1, n_payments + 1):
         interest = balance * monthly_rate
         principal_paid = payment - interest
@@ -120,7 +135,7 @@ def calculate_schedule(principal: float, annual_rate: float, years: int, start_d
                 "Remaining Balance": round(balance, 2),
             }
         )
-        payment_date += timedelta(days=30)
+        payment_date = next_monthly_payment_date(payment_date, anchor_day)
         if balance <= 0:
             break
     return pd.DataFrame(schedule)

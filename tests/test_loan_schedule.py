@@ -49,12 +49,12 @@ def test_calculate_schedule_handles_zero_interest():
     assert schedule.iloc[-1]["Remaining Balance"] == pytest.approx(0.0, abs=0.01)
 
 
-def test_calculate_schedule_uses_30_day_payment_intervals():
+def test_calculate_schedule_uses_monthly_payment_intervals():
     start_date = datetime(2026, 1, 1)
     schedule = calculate_schedule(1200, 12.0, 1, start_date)
 
     assert schedule.iloc[0]["Date"] == "2026-01-01"
-    assert schedule.iloc[1]["Date"] == "2026-01-31"
+    assert schedule.iloc[1]["Date"] == "2026-02-01"
 
 
 @pytest.mark.parametrize(
