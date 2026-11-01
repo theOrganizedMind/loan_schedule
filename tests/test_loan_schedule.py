@@ -3,10 +3,12 @@ from datetime import datetime
 import pytest
 
 from loan_schedule import (
+    _fit_linear_model,
     build_payment_rows,
     calculate_schedule,
     format_duration_remaining,
     resolve_data_directory,
+    simulate_extra_payment_metrics,
 )
 
 
@@ -55,6 +57,21 @@ def test_calculate_schedule_uses_monthly_payment_intervals():
 
     assert schedule.iloc[0]["Date"] == "2026-01-01"
     assert schedule.iloc[1]["Date"] == "2026-02-01"
+
+
+def test_simulate_extra_payment_metrics_reduces_term_and_interest():
+    start_date = datetime(2026, 1, 1)
+    baseline = simulate_extra_payment_metrics(1200, 12.0, 1, start_date, 0)
+    accelerated = simulate_extra_payment_metrics(1200, 12.0, 1, start_date, 200)
+
+    assert accelerated["months"] < baseline["months"]
+    assert accelerated["total_interest"] < baseline["total_interest"]
+
+
+def test_fit_linear_model_returns_expected_coefficients():
+    intercept, slope = _fit_linear_model([100, 200, 300], [2, 4, 6])
+    assert intercept == pytest.approx(0.0, abs=1e-9)
+    assert slope == pytest.approx(0.02, abs=1e-9)
 
 
 @pytest.mark.parametrize(

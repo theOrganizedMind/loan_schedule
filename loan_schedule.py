@@ -58,6 +58,7 @@ REPORT_HEADERS = [
     "Remaining Balance",
 ]
 CHART_OPTIONS = ("Overview", "By Bank", "By Loan")
+ML_OPTION_HEADERS = ("Extra/Month", "Months Saved", "Interest Saved", "New Payoff Date")
 
 
 def parse_date(value: str, label: str) -> datetime:
@@ -139,6 +140,77 @@ def calculate_schedule(principal: float, annual_rate: float, years: int, start_d
         if balance <= 0:
             break
     return pd.DataFrame(schedule)
+
+
+def _monthly_payment_amount(principal: float, annual_rate: float, years: int) -> float:
+    """Return the scheduled monthly payment amount for an amortizing loan."""
+    monthly_rate = annual_rate / 12 / 100
+    n_payments = years * 12
+    if monthly_rate == 0:
+        return principal / n_payments
+    return principal * (monthly_rate * (1 + monthly_rate) ** n_payments) / ((1 + monthly_rate) ** n_payments - 1)
+
+
+def simulate_extra_payment_metrics(
+    principal: float,
+    annual_rate: float,
+    years: int,
+    start_date: datetime,
+    extra_monthly_payment: float,
+) -> dict[str, object]:
+    """Simulate payoff metrics when adding a fixed extra monthly payment."""
+    _validate_loan_inputs(principal, annual_rate, years, start_date)
+    if extra_monthly_payment < 0:
+        raise ValueError("Extra monthly payment cannot be negative.")
+
+    monthly_rate = annual_rate / 12 / 100
+    scheduled_payment = _monthly_payment_amount(principal, annual_rate, years)
+    payment_amount = scheduled_payment + extra_monthly_payment
+
+    balance = principal
+    payment_date = start_date
+    anchor_day = start_date.day
+    months = 0
+    total_interest = 0.0
+    payoff_date = start_date
+    max_iterations = years * 12 * 2
+
+    while balance > 1e-8 and months < max_iterations:
+        interest = balance * monthly_rate
+        principal_paid = payment_amount - interest
+        if principal_paid <= 0:
+            raise ValueError("Monthly payment is too low to reduce principal.")
+        principal_paid = min(principal_paid, balance)
+        balance -= principal_paid
+        total_interest += interest
+        months += 1
+        payoff_date = payment_date
+        payment_date = next_monthly_payment_date(payment_date, anchor_day)
+
+    if months >= max_iterations and balance > 1e-8:
+        raise ValueError("Unable to compute payoff metrics for the provided loan values.")
+
+    return {
+        "months": months,
+        "total_interest": round(total_interest, 2),
+        "payoff_date": payoff_date.strftime(DATE_FORMAT),
+        "scheduled_payment": round(scheduled_payment, 2),
+        "total_payment": round(payment_amount, 2),
+    }
+
+
+def _fit_linear_model(features: list[float], targets: list[float]) -> tuple[float, float]:
+    """Fit a simple y = intercept + slope*x linear model."""
+    if not features or len(features) != len(targets):
+        raise ValueError("Feature and target lists must be non-empty and aligned.")
+    n = len(features)
+    mean_x = sum(features) / n
+    mean_y = sum(targets) / n
+    numerator = sum((x - mean_x) * (y - mean_y) for x, y in zip(features, targets))
+    denominator = sum((x - mean_x) ** 2 for x in features)
+    slope = 0.0 if denominator == 0 else numerator / denominator
+    intercept = mean_y - slope * mean_x
+    return intercept, slope
 
 
 def format_duration_remaining(end_date_value: str, today: datetime | None = None) -> str:
@@ -239,16 +311,19 @@ class LoanScheduleApp:
         self.tab_loans = ttk.Frame(self.notebook)
         self.tab_track = ttk.Frame(self.notebook)
         self.tab_reports = ttk.Frame(self.notebook)
+        self.tab_ml = ttk.Frame(self.notebook)
         self.tab_charts = ttk.Frame(self.notebook)
 
         self.notebook.add(self.tab_loans, text="📕Loan Management")
         self.notebook.add(self.tab_track, text="📍Track Loan")
         self.notebook.add(self.tab_reports, text="📄Reports")
+        self.notebook.add(self.tab_ml, text="🤖Machine Learning")
         self.notebook.add(self.tab_charts, text="📈Charts")
 
         self.build_loan_tab()
         self.build_track_tab()
         self.build_reports_tab()
+        self.build_machine_learning_tab()
         self.build_charts_tab()
 
     def build_loan_tab(self) -> None:
@@ -415,6 +490,62 @@ class LoanScheduleApp:
         summary_frame.rowconfigure(0, weight=1)
         summary_frame.columnconfigure(0, weight=1)
 
+    def build_machine_learning_tab(self) -> None:
+        """Build the Machine Learning tab for payment optimization analysis."""
+        controls = ttk.LabelFrame(self.tab_ml, text="Payment Optimization")
+        controls.grid(row=0, column=0, sticky="ew", padx=10, pady=8)
+
+        ttk.Label(controls, text="Bank Name").grid(row=0, column=0, sticky="e", padx=6, pady=6)
+        self.ml_bank_entry = ttk.Combobox(controls, state="normal", width=24)
+        self.ml_bank_entry.grid(row=0, column=1, sticky="w", padx=6, pady=6)
+
+        ttk.Label(controls, text="Loan Number").grid(row=0, column=2, sticky="e", padx=6, pady=6)
+        self.ml_loan_entry = ttk.Combobox(controls, state="normal", width=24)
+        self.ml_loan_entry.grid(row=0, column=3, sticky="w", padx=6, pady=6)
+
+        ttk.Label(controls, text="Extra / Month ($)").grid(row=1, column=0, sticky="e", padx=6, pady=6)
+        self.ml_extra_entry = ttk.Entry(controls, width=24)
+        self.ml_extra_entry.grid(row=1, column=1, sticky="w", padx=6, pady=6)
+        self.ml_extra_entry.insert(0, "200")
+
+        ttk.Label(controls, text="Max Extra to Evaluate ($)").grid(row=1, column=2, sticky="e", padx=6, pady=6)
+        self.ml_max_extra_entry = ttk.Entry(controls, width=24)
+        self.ml_max_extra_entry.grid(row=1, column=3, sticky="w", padx=6, pady=6)
+        self.ml_max_extra_entry.insert(0, "500")
+
+        button_row = ttk.Frame(controls)
+        button_row.grid(row=2, column=0, columnspan=4, sticky="ew", padx=6, pady=6)
+        ttk.Button(button_row, text="Suggest Options", command=lambda: self._safe_execute(self.run_ml_payment_analysis)).grid(row=0, column=0, padx=4, pady=4)
+        ttk.Button(button_row, text="Clear", command=lambda: self._safe_execute(self.clear_ml_analysis)).grid(row=0, column=1, padx=4, pady=4)
+        button_row.columnconfigure(2, weight=1)
+
+        summary_frame = ttk.LabelFrame(self.tab_ml, text="Model Insights")
+        summary_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=8)
+        self.ml_summary_text = tk.Text(summary_frame, height=8, wrap="word", font=("Times New Roman", 12))
+        self.ml_summary_text.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
+        self.ml_summary_text.configure(state="disabled")
+
+        table_frame = ttk.LabelFrame(self.tab_ml, text="Best and Alternate Payment Options")
+        table_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 8))
+        columns = ("extra_payment", "months_saved", "interest_saved", "new_payoff_date")
+        self.ml_tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=10)
+        widths = (140, 140, 160, 160)
+        for col, heading, width in zip(columns, ML_OPTION_HEADERS, widths):
+            self.ml_tree.heading(col, text=heading)
+            self.ml_tree.column(col, width=width, anchor="w")
+        ml_scroll = ttk.Scrollbar(table_frame, orient="vertical", command=self.ml_tree.yview)
+        self.ml_tree.configure(yscrollcommand=ml_scroll.set)
+        self.ml_tree.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
+        ml_scroll.grid(row=0, column=1, sticky="ns", pady=6)
+
+        self.tab_ml.rowconfigure(1, weight=1)
+        self.tab_ml.rowconfigure(2, weight=1)
+        self.tab_ml.columnconfigure(0, weight=1)
+        summary_frame.rowconfigure(0, weight=1)
+        summary_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
+        table_frame.columnconfigure(0, weight=1)
+
     def build_charts_tab(self) -> None:
         """Build the Charts tab filters, KPI view, and chart details table."""
         controls = ttk.LabelFrame(self.tab_charts, text="Chart Controls")
@@ -491,7 +622,16 @@ class LoanScheduleApp:
         self.refresh_loan_tree(self.data["loans"])
         self.refresh_track_tree()
         self.run_loan_history_report()
+        self.refresh_ml_tab()
         self.refresh_chart_details()
+
+    def refresh_ml_tab(self) -> None:
+        """Clear ML suggestion outputs while preserving entered filter values."""
+        self.ml_tree.delete(*self.ml_tree.get_children())
+        self.ml_summary_text.configure(state="normal")
+        self.ml_summary_text.delete("1.0", tk.END)
+        self.ml_summary_text.insert(tk.END, "Select a loan and run Suggest Options to generate payment recommendations.")
+        self.ml_summary_text.configure(state="disabled")
 
     def _setup_autosuggestions(self) -> None:
         """Register autosuggestion widgets and bind key handlers for filtering suggestions."""
@@ -499,12 +639,14 @@ class LoanScheduleApp:
             self.loan_bank_entry,
             self.track_bank_entry,
             self.report_bank_entry,
+            self.ml_bank_entry,
             self.chart_bank_entry,
         ]
         self.loan_suggestion_widgets = [
             self.loan_number_entry,
             self.track_loan_entry,
             self.report_loan_entry,
+            self.ml_loan_entry,
             self.chart_loan_entry,
         ]
         for widget in self.bank_suggestion_widgets:
@@ -1366,6 +1508,122 @@ class LoanScheduleApp:
         figure.tight_layout()
         plt.show(block=False)
         self.refresh_chart_details()
+
+    def _resolve_ml_loan(self) -> dict[str, object]:
+        """Resolve a single loan for ML analysis from bank/loan filters."""
+        bank_filter = self.ml_bank_entry.get().strip().lower()
+        loan_filter = self.ml_loan_entry.get().strip().lower()
+        matches = [
+            loan
+            for loan in self.data["loans"]
+            if (not bank_filter or bank_filter == str(loan.get("bank_name", "")).strip().lower())
+            and (not loan_filter or loan_filter == str(loan.get("loan_number", "")).strip().lower())
+        ]
+        if not matches:
+            raise ValueError("No matching loan found for the selected Bank Name and Loan Number.")
+        if len(matches) > 1:
+            raise ValueError("Multiple loans match the selection. Select both Bank Name and Loan Number.")
+        return matches[0]
+
+    def run_ml_payment_analysis(self) -> None:
+        """Run payment optimization analysis and suggest best and alternate extra-payment options."""
+        loan = self._resolve_ml_loan()
+        principal = float(loan.get("loan_amount", 0.0))
+        annual_rate = float(loan.get("annual_interest_rate", 0.0))
+        years = int(loan.get("term_years", 0))
+        start_date = parse_date(str(loan.get("start_date", "")), "Start Date")
+
+        requested_extra = float(self.ml_extra_entry.get().strip())
+        max_extra = float(self.ml_max_extra_entry.get().strip())
+        if requested_extra < 0:
+            raise ValueError("Extra / Month must be greater than or equal to 0.")
+        if max_extra <= 0:
+            raise ValueError("Max Extra to Evaluate must be greater than 0.")
+
+        effective_max = max(max_extra, requested_extra)
+        baseline = simulate_extra_payment_metrics(principal, annual_rate, years, start_date, 0.0)
+        baseline_months = int(baseline["months"])
+        baseline_interest = float(baseline["total_interest"])
+        baseline_payoff_date = str(baseline["payoff_date"])
+
+        candidate_extras = sorted(
+            {
+                round(float(extra), 2)
+                for extra in [50.0, 100.0, requested_extra] + [float(value) for value in range(50, int(effective_max) + 1, 50)]
+                if extra > 0
+            }
+        )
+        if len(candidate_extras) < 2:
+            candidate_extras = [round(max(requested_extra, 50.0), 2), round(max(requested_extra, 50.0) + 50.0, 2)]
+
+        option_rows: list[dict[str, object]] = []
+        for extra_payment in candidate_extras:
+            metrics = simulate_extra_payment_metrics(principal, annual_rate, years, start_date, extra_payment)
+            months_saved = baseline_months - int(metrics["months"])
+            interest_saved = baseline_interest - float(metrics["total_interest"])
+            option_rows.append(
+                {
+                    "extra_payment": round(extra_payment, 2),
+                    "months_saved": months_saved,
+                    "interest_saved": round(interest_saved, 2),
+                    "new_payoff_date": str(metrics["payoff_date"]),
+                }
+            )
+
+        features = [float(row["extra_payment"]) for row in option_rows]
+        month_targets = [float(row["months_saved"]) for row in option_rows]
+        interest_targets = [float(row["interest_saved"]) for row in option_rows]
+        month_intercept, month_slope = _fit_linear_model(features, month_targets)
+        interest_intercept, interest_slope = _fit_linear_model(features, interest_targets)
+
+        requested_metrics = simulate_extra_payment_metrics(principal, annual_rate, years, start_date, requested_extra)
+        requested_months_saved = baseline_months - int(requested_metrics["months"])
+        requested_interest_saved = baseline_interest - float(requested_metrics["total_interest"])
+        predicted_months_saved = max(0.0, month_intercept + month_slope * requested_extra)
+        predicted_interest_saved = max(0.0, interest_intercept + interest_slope * requested_extra)
+
+        ranked = sorted(option_rows, key=lambda row: (float(row["interest_saved"]), float(row["months_saved"])), reverse=True)
+        best_option = ranked[0]
+        alternate_option = ranked[1] if len(ranked) > 1 else ranked[0]
+
+        self.ml_tree.delete(*self.ml_tree.get_children())
+        for label, row in (("Best", best_option), ("Alternate", alternate_option)):
+            self.ml_tree.insert(
+                "",
+                "end",
+                values=(
+                    f"{label}: ${float(row['extra_payment']):,.2f}",
+                    int(row["months_saved"]),
+                    f"${float(row['interest_saved']):,.2f}",
+                    row["new_payoff_date"],
+                ),
+            )
+
+        summary = (
+            f"Loan: {loan.get('bank_name', '')} | {loan.get('loan_number', '')}\n"
+            f"Base Monthly Payment: ${float(baseline['scheduled_payment']):,.2f}\n"
+            f"Base Payoff Date: {baseline_payoff_date}\n"
+            f"Paying an extra ${requested_extra:,.2f}/month would reduce the overall loan by {requested_months_saved} payments, "
+            f"saving ${requested_interest_saved:,.2f} in interest.\n"
+            f"Model estimate for ${requested_extra:,.2f}/month ({int(round(predicted_months_saved))} payments reduced and "
+            f"${predicted_interest_saved:,.2f} interest saved).\n"
+            f"Recommended best option: ${float(best_option['extra_payment']):,.2f}/month "
+            f"({int(best_option['months_saved'])} payments saved, ${float(best_option['interest_saved']):,.2f} interest saved)."
+        )
+        self.ml_summary_text.configure(state="normal")
+        self.ml_summary_text.delete("1.0", tk.END)
+        self.ml_summary_text.insert(tk.END, summary)
+        self.ml_summary_text.configure(state="disabled")
+
+    def clear_ml_analysis(self) -> None:
+        """Clear ML inputs and results, restoring defaults."""
+        self.ml_bank_entry.delete(0, tk.END)
+        self.ml_loan_entry.delete(0, tk.END)
+        self.ml_extra_entry.delete(0, tk.END)
+        self.ml_extra_entry.insert(0, "200")
+        self.ml_max_extra_entry.delete(0, tk.END)
+        self.ml_max_extra_entry.insert(0, "500")
+        self.refresh_ml_tab()
 
     def _write_table(self, file_path: str, headers: list[str], rows: list[list[object]]) -> None:
         """Write tabular data to CSV or XLSX based on file extension."""
