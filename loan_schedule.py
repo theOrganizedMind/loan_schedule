@@ -1389,8 +1389,15 @@ class LoanScheduleApp:
 
     def _update_chart_kpi(self, rows: list[dict[str, object]]) -> None:
         """Update chart KPI summary text from the supplied chart-filtered rows."""
+        start_date = parse_date(self.chart_start_entry.get().strip(), "Chart Start Date").date()
+        end_date = parse_date(self.chart_end_entry.get().strip(), "Chart End Date").date()
+        status_filter = self.chart_status_combo.get().strip()
+        payment_rows = self._chart_payment_rows(rows, start_date, end_date, status_filter)
+
         total_loan_amount = sum(float(row["loan_amount"]) for row in rows)
         total_remaining = sum(float(row["remaining_balance"]) for row in rows)
+        total_payments = sum(float(payment.get("payment", 0.0)) for payment in payment_rows)
+        total_interest_paid = sum(float(payment.get("interest_paid", 0.0)) for payment in payment_rows)
         avg_loan_amount = (total_loan_amount / len(rows)) if rows else 0.0
         avg_remaining = (total_remaining / len(rows)) if rows else 0.0
         avg_interest_rate = 0.0
@@ -1422,6 +1429,8 @@ class LoanScheduleApp:
             f"Number of Loans: {len(rows)}\n"
             f"Total Loan Amount: ${total_loan_amount:,.2f}\n"
             f"Total Remaining Balance: ${total_remaining:,.2f}\n"
+            f"Total Payments: ${total_payments:,.2f}\n"
+            f"Total Interest Paid: ${total_interest_paid:,.2f}\n"
             f"Average Loan Amount: ${avg_loan_amount:,.2f}\n"
             f"Average Payment Amount: ${avg_payment_amount:,.2f}\n"
             f"Average Remaining Balance: ${avg_remaining:,.2f}\n"
@@ -1431,6 +1440,39 @@ class LoanScheduleApp:
         self.chart_kpi_text.delete("1.0", tk.END)
         self.chart_kpi_text.insert(tk.END, kpi)
         self.chart_kpi_text.configure(state="disabled")
+
+    def _chart_payment_rows(
+        self,
+        rows: list[dict[str, object]],
+        start_date,
+        end_date,
+        status_filter: str,
+    ) -> list[dict[str, object]]:
+        """Return chart payment rows filtered by selected loans, date range, and status filter."""
+        selected_keys = {(str(row["bank_name"]).lower(), str(row["loan_number"]).lower()) for row in rows}
+        filtered: list[dict[str, object]] = []
+        for payment in self.data["payments"]:
+            key = (str(payment.get("bank_name", "")).lower(), str(payment.get("loan_number", "")).lower())
+            if key not in selected_keys:
+                continue
+            payment_date = parse_date(str(payment.get("date", "")), "Payment Date").date()
+            if payment_date < start_date or payment_date > end_date:
+                continue
+            payment_status = str(payment.get("status", "Upcoming"))
+            if status_filter != "All" and payment_status != status_filter:
+                continue
+            filtered.append(payment)
+
+        def payment_sort_key(item: dict[str, object]) -> tuple[datetime, int]:
+            payment_date = parse_date(str(item.get("date", "")), "Payment Date")
+            try:
+                payment_number = int(item.get("payment_number", 0))
+            except (TypeError, ValueError):
+                payment_number = 0
+            return payment_date, payment_number
+
+        filtered.sort(key=payment_sort_key)
+        return filtered
 
     def clear_chart_filters(self) -> None:
         """Reset chart filters to defaults and refresh chart detail/KPI views."""
@@ -1453,59 +1495,209 @@ class LoanScheduleApp:
             raise ValueError("No chart data matches the selected filters.")
         filter_start = parse_date(self.chart_start_entry.get().strip(), "Chart Start Date")
         filter_end = parse_date(self.chart_end_entry.get().strip(), "Chart End Date")
+        status_filter = self.chart_status_combo.get().strip()
+        chart_option = self.chart_option_combo.get().strip() or "Overview"
         total_loan_amount = sum(float(row["loan_amount"]) for row in rows)
         total_remaining = sum(float(row["remaining_balance"]) for row in rows)
-        selected_keys = {(str(row["bank_name"]).lower(), str(row["loan_number"]).lower()) for row in rows}
-
+        payment_rows = self._chart_payment_rows(rows, filter_start.date(), filter_end.date(), status_filter)
+        total_payments = sum(float(payment.get("payment", 0.0)) for payment in payment_rows)
+        total_interest_paid = sum(float(payment.get("interest_paid", 0.0)) for payment in payment_rows)
         status_counts = {"Paid": 0, "Upcoming": 0}
-        for payment in self.data["payments"]:
-            key = (str(payment.get("bank_name", "")).lower(), str(payment.get("loan_number", "")).lower())
-            if key not in selected_keys:
-                continue
+        for payment in payment_rows:
             payment_status = str(payment.get("status", "Upcoming"))
-            if payment_status not in status_counts:
-                continue
-            status_counts[payment_status] += 1
+            if payment_status in status_counts:
+                status_counts[payment_status] += 1
+        kpi_text = (
+            f"Loans: {len(rows)} | Payments in range: {len(payment_rows)}\n"
+            f"Total Loan Amount: ${total_loan_amount:,.2f}\n"
+            f"Remaining Balance: ${total_remaining:,.2f}\n"
+            f"Total Payments: ${total_payments:,.2f}\n"
+            f"Total Interest Paid: ${total_interest_paid:,.2f}"
+        )
 
-        figure = plt.figure(figsize=(13, 8))
+        figure = plt.figure(figsize=(14, 9))
         grid = figure.add_gridspec(2, 2, height_ratios=[1, 1.2])
-        ax_pie = figure.add_subplot(grid[0, 0])
-        pie_labels = ["Paid", "Upcoming"]
-        pie_values = [status_counts[label] for label in pie_labels]
-        ax_pie.pie(pie_values, labels=pie_labels, autopct="%1.1f%%", startangle=90)
-        ax_pie.set_title("Loan Status Distribution")
 
-        ax_amount_pie = figure.add_subplot(grid[0, 1])
-        amount_labels = ["Total Loan Amount", "Remaining Balance"]
-        amount_values = [total_loan_amount, total_remaining]
-        ax_amount_pie.pie(amount_values, labels=amount_labels, autopct="%1.1f%%", startangle=90)
-        ax_amount_pie.set_title("Loan Amount Metrics")
+        if chart_option == "By Bank":
+            bank_loan_totals: dict[str, float] = {}
+            bank_remaining_totals: dict[str, float] = {}
+            for row in rows:
+                bank_name = str(row["bank_name"])
+                bank_loan_totals[bank_name] = bank_loan_totals.get(bank_name, 0.0) + float(row["loan_amount"])
+                bank_remaining_totals[bank_name] = bank_remaining_totals.get(bank_name, 0.0) + float(row["remaining_balance"])
 
-        ax_line = figure.add_subplot(grid[1, :])
-        plotted = False
-        for row in rows:
-            loan_start = parse_date(str(row["start_date"]), "Start Date")
-            loan_end = parse_date(str(row["end_date"]), "End Date")
-            x_start = max(loan_start, filter_start)
-            x_end = min(loan_end, filter_end)
-            if x_end < x_start:
-                continue
-            ax_line.plot(
-                [x_start, x_end],
-                [float(row["loan_amount"]), float(row["remaining_balance"])],
-                marker="o",
-                label=f"{row['bank_name']} | {row['loan_number']}",
+            bank_payment_totals: dict[str, float] = {}
+            bank_interest_totals: dict[str, float] = {}
+            bank_paid_counts: dict[str, int] = {}
+            bank_upcoming_counts: dict[str, int] = {}
+            for payment in payment_rows:
+                bank_name = str(payment.get("bank_name", "Unknown"))
+                bank_payment_totals[bank_name] = bank_payment_totals.get(bank_name, 0.0) + float(payment.get("payment", 0.0))
+                bank_interest_totals[bank_name] = bank_interest_totals.get(bank_name, 0.0) + float(payment.get("interest_paid", 0.0))
+                if str(payment.get("status", "Upcoming")) == "Paid":
+                    bank_paid_counts[bank_name] = bank_paid_counts.get(bank_name, 0) + 1
+                else:
+                    bank_upcoming_counts[bank_name] = bank_upcoming_counts.get(bank_name, 0) + 1
+
+            banks = sorted(bank_loan_totals.keys(), key=str.lower)
+            x_axis = list(range(len(banks)))
+            ax1 = figure.add_subplot(grid[0, 0])
+            bar_width = 0.4
+            ax1.bar([x - bar_width / 2 for x in x_axis], [bank_loan_totals[bank] for bank in banks], width=bar_width, label="Loan Amount")
+            ax1.bar([x + bar_width / 2 for x in x_axis], [bank_remaining_totals[bank] for bank in banks], width=bar_width, label="Remaining Balance")
+            ax1.set_title("Exposure by Bank")
+            ax1.set_xticks(x_axis, banks, rotation=25, ha="right")
+            ax1.set_ylabel("Amount")
+            ax1.grid(True, axis="y", alpha=0.3)
+            ax1.legend(fontsize=8)
+
+            ax2 = figure.add_subplot(grid[0, 1])
+            ax2.plot(banks, [bank_payment_totals.get(bank, 0.0) for bank in banks], marker="o", label="Total Payments")
+            ax2.plot(banks, [bank_interest_totals.get(bank, 0.0) for bank in banks], marker="o", label="Interest Paid")
+            ax2.set_title("Payments and Interest by Bank")
+            ax2.set_ylabel("Amount")
+            ax2.grid(True, alpha=0.3)
+            ax2.legend(fontsize=8)
+            ax2.tick_params(axis="x", rotation=25)
+
+            ax3 = figure.add_subplot(grid[1, 0])
+            pie_values = [bank_remaining_totals[bank] for bank in banks]
+            if sum(pie_values) > 0:
+                ax3.pie(pie_values, labels=banks, autopct="%1.1f%%", startangle=90)
+            else:
+                ax3.text(0.5, 0.5, "No remaining balance data", ha="center", va="center")
+            ax3.set_title("Remaining Balance Share by Bank")
+
+            ax4 = figure.add_subplot(grid[1, 1])
+            ax4.bar(banks, [bank_paid_counts.get(bank, 0) for bank in banks], label="Paid")
+            ax4.bar(
+                banks,
+                [bank_upcoming_counts.get(bank, 0) for bank in banks],
+                bottom=[bank_paid_counts.get(bank, 0) for bank in banks],
+                label="Upcoming",
             )
-            plotted = True
-        if not plotted:
-            raise ValueError("No line chart data available for the selected date range.")
-        ax_line.set_title("Loan Amount Trend by Start/End Date")
-        ax_line.set_xlabel("Date")
-        ax_line.set_ylabel("Loan Amount")
-        ax_line.grid(True, alpha=0.3)
-        ax_line.legend(loc="upper right", fontsize=8)
+            ax4.set_title("Payment Status Counts by Bank")
+            ax4.set_ylabel("Payment Count")
+            ax4.tick_params(axis="x", rotation=25)
+            ax4.grid(True, axis="y", alpha=0.3)
+            ax4.legend(fontsize=8)
+        elif chart_option == "By Loan":
+            loan_labels = [f"{row['bank_name']} | {row['loan_number']}" for row in rows]
+            loan_remaining = {label: float(row["remaining_balance"]) for label, row in zip(loan_labels, rows)}
+            loan_payments: dict[str, float] = {label: 0.0 for label in loan_labels}
+            loan_interest: dict[str, float] = {label: 0.0 for label in loan_labels}
+            loan_series: dict[str, list[tuple[int, float]]] = {label: [] for label in loan_labels}
 
-        figure.tight_layout()
+            for payment in payment_rows:
+                label = f"{payment.get('bank_name', '')} | {payment.get('loan_number', '')}"
+                if label not in loan_payments:
+                    continue
+                loan_payments[label] += float(payment.get("payment", 0.0))
+                loan_interest[label] += float(payment.get("interest_paid", 0.0))
+                try:
+                    payment_number = int(payment.get("payment_number", 0))
+                except (TypeError, ValueError):
+                    payment_number = 0
+                loan_series[label].append((payment_number, float(payment.get("remaining_balance", 0.0))))
+
+            selected_labels = sorted(loan_labels, key=lambda label: loan_remaining[label], reverse=True)[:8]
+            x_axis = list(range(len(selected_labels)))
+
+            ax1 = figure.add_subplot(grid[0, 0])
+            plotted = False
+            for label in selected_labels:
+                points = sorted(loan_series.get(label, []), key=lambda item: item[0])
+                if not points:
+                    continue
+                ax1.plot([item[0] for item in points], [item[1] for item in points], marker="o", label=label)
+                plotted = True
+            if plotted:
+                ax1.legend(fontsize=7, loc="upper right")
+            else:
+                ax1.text(0.5, 0.5, "No payment trajectories in selected range", ha="center", va="center")
+            ax1.set_title("Remaining Balance Trajectory by Loan")
+            ax1.set_xlabel("Payment #")
+            ax1.set_ylabel("Remaining Balance")
+            ax1.grid(True, alpha=0.3)
+
+            ax2 = figure.add_subplot(grid[0, 1])
+            ax2.bar(x_axis, [loan_payments[label] for label in selected_labels], color="#4C78A8")
+            ax2.set_title("Total Payments by Loan")
+            ax2.set_xticks(x_axis, selected_labels, rotation=25, ha="right")
+            ax2.set_ylabel("Amount")
+            ax2.grid(True, axis="y", alpha=0.3)
+
+            ax3 = figure.add_subplot(grid[1, 0])
+            ax3.bar(x_axis, [loan_interest[label] for label in selected_labels], color="#F58518")
+            ax3.set_title("Total Interest Paid by Loan")
+            ax3.set_xticks(x_axis, selected_labels, rotation=25, ha="right")
+            ax3.set_ylabel("Amount")
+            ax3.grid(True, axis="y", alpha=0.3)
+
+            ax4 = figure.add_subplot(grid[1, 1])
+            pie_labels = selected_labels[:6]
+            pie_values = [loan_remaining[label] for label in pie_labels]
+            if sum(pie_values) > 0:
+                ax4.pie(pie_values, labels=pie_labels, autopct="%1.1f%%", startangle=90)
+            else:
+                ax4.text(0.5, 0.5, "No remaining balance data", ha="center", va="center")
+            ax4.set_title("Remaining Balance Share by Loan")
+        else:
+            sorted_rows = sorted(rows, key=lambda item: float(item["remaining_balance"]), reverse=True)[:8]
+            row_labels = [f"{row['bank_name']} | {row['loan_number']}" for row in sorted_rows]
+            ax1 = figure.add_subplot(grid[0, 0])
+            ax1.barh(row_labels, [float(row["remaining_balance"]) for row in sorted_rows], color="#59A14F")
+            ax1.set_title("Top Remaining Balances")
+            ax1.set_xlabel("Remaining Balance")
+            ax1.grid(True, axis="x", alpha=0.3)
+
+            ax2 = figure.add_subplot(grid[0, 1])
+            pie_labels = ["Paid", "Upcoming"]
+            pie_values = [status_counts[label] for label in pie_labels]
+            if sum(pie_values) > 0:
+                ax2.pie(pie_values, labels=pie_labels, autopct="%1.1f%%", startangle=90)
+            else:
+                ax2.text(0.5, 0.5, "No payment status data", ha="center", va="center")
+            ax2.set_title("Payment Status Distribution")
+
+            ax3 = figure.add_subplot(grid[1, 0])
+            if payment_rows:
+                cumulative_dates = []
+                cumulative_payments = []
+                cumulative_interest = []
+                running_payments = 0.0
+                running_interest = 0.0
+                for payment in payment_rows:
+                    running_payments += float(payment.get("payment", 0.0))
+                    running_interest += float(payment.get("interest_paid", 0.0))
+                    cumulative_dates.append(parse_date(str(payment.get("date", "")), "Payment Date"))
+                    cumulative_payments.append(running_payments)
+                    cumulative_interest.append(running_interest)
+                ax3.plot(cumulative_dates, cumulative_payments, marker="o", label="Cumulative Payments")
+                ax3.plot(cumulative_dates, cumulative_interest, marker="o", label="Cumulative Interest")
+                ax3.legend(fontsize=8)
+            else:
+                ax3.text(0.5, 0.5, "No payment history in selected range", ha="center", va="center")
+            ax3.set_title("Cumulative Payment Trend")
+            ax3.set_xlabel("Payment Date")
+            ax3.set_ylabel("Amount")
+            ax3.grid(True, alpha=0.3)
+
+            ax4 = figure.add_subplot(grid[1, 1])
+            bar_labels = row_labels
+            x_axis = list(range(len(bar_labels)))
+            ax4.bar([x - 0.2 for x in x_axis], [float(row["loan_amount"]) for row in sorted_rows], width=0.4, label="Loan Amount")
+            ax4.bar([x + 0.2 for x in x_axis], [float(row["remaining_balance"]) for row in sorted_rows], width=0.4, label="Remaining Balance")
+            ax4.set_title("Loan Amount vs Remaining")
+            ax4.set_xticks(x_axis, bar_labels, rotation=25, ha="right")
+            ax4.set_ylabel("Amount")
+            ax4.grid(True, axis="y", alpha=0.3)
+            ax4.legend(fontsize=8)
+
+        figure.suptitle(f"{chart_option} Dashboard ({filter_start.date()} to {filter_end.date()})", fontsize=14, fontweight="bold")
+        figure.text(0.01, 0.01, kpi_text, fontsize=9, va="bottom")
+
+        figure.tight_layout(rect=(0, 0.08, 1, 0.95))
         plt.show(block=False)
         self.refresh_chart_details()
 

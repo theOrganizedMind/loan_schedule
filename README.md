@@ -101,11 +101,13 @@ Features
 - Search auto-populates chart Start Date and End Date based on selected Bank Name/Loan Number matches.
 - Search updates Chart View and Chart Details to only show rows matching the selected Bank Name and/or Loan Number.
 - Display Chart opens Matplotlib in a separate figure window.
-- Chart output includes subplot views:
-  - Pie chart (status distribution)
-  - Pie chart (loan amount metrics: total amount vs remaining balance)
-  - Line chart (loan amount trend by start/end dates, honoring selected or provided date range)
-- In-app "Chart View" shows KPI totals/averages in Times New Roman, size 12.
+- Chart output includes distinct executive dashboard layouts by **Chart Option**:
+  - **Overview**: top remaining balances (bar), payment status distribution (pie), cumulative payment/interest trend (line), and loan amount vs remaining (bar)
+  - **By Bank**: exposure by bank (grouped bar), payments vs interest by bank (line), remaining-balance share (pie), and payment status counts by bank (stacked bar)
+  - **By Loan**: remaining-balance trajectory by payment number (line), total payments by loan (bar), total interest paid by loan (bar), and remaining-balance share (pie)
+- In-app "Chart View" shows KPI totals/averages in Times New Roman, size 12, including:
+  - Total Payments
+  - Total Interest Paid
 - Chart details tree columns:
   - Bank Name, Loan Number, Loan Amount, Remaining Balance, Remaining Duration
 
