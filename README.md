@@ -4,6 +4,7 @@ Loan Schedule
 A Tkinter desktop application for managing, tracking, reporting, and charting loan schedules.
 
 The app now uses a notebook/tab layout.
+Current tab order: Loan Management | Track Loan | Purchases | Reports | Machine Learning | Charts.
 
 Features
 --------
@@ -62,7 +63,34 @@ Features
   - Remaining Balance (current total outstanding for the loan)
 - Displays only future/upcoming payments in the tracking tree.
 
-### 3) Reports Tab
+### 3) Purchases Tab
+
+- Entry fields:
+  - Number
+  - Description
+  - Type
+  - Purchase Date (`YYYY-MM-DD`)
+  - Purchase Price
+  - VIN
+  - QTY
+- Type is an editable dropdown; users can add/edit purchase type options.
+- Buttons:
+  - Add
+  - Update
+  - Delete
+  - Search
+  - Clear
+  - Export (`.csv` or `.xlsx`)
+- Treeview columns:
+  - Number
+  - Description
+  - Type
+  - Purchase Date
+  - Purchase Price
+  - VIN
+  - QTY
+
+### 4) Reports Tab
 
 - Entry fields:
   - Bank Name
@@ -84,7 +112,7 @@ Features
   - Payment Status Counts (Paid, Upcoming)
   - Styled with Times New Roman, size 12
 
-### 4) Charts Tab
+### 5) Charts Tab
 
 - Entry fields:
   - Bank Name

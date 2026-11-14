@@ -47,6 +47,15 @@ PAYMENT_HEADERS = [
     "Remaining Balance",
     "Status",
 ]
+PURCHASE_HEADERS = [
+    "Number",
+    "Description",
+    "Type",
+    "Purchase Date",
+    "Purchase Price",
+    "VIN",
+    "QTY",
+]
 REPORT_HEADERS = [
     "Bank Name",
     "Loan Number",
@@ -59,6 +68,7 @@ REPORT_HEADERS = [
 ]
 CHART_OPTIONS = ("Overview", "By Bank", "By Loan")
 ML_OPTION_HEADERS = ("Extra/Month", "Months Saved", "Interest Saved", "New Payoff Date")
+DEFAULT_PURCHASE_TYPES = ["Truck", "Dumpsters", "Equipment"]
 
 
 def parse_date(value: str, label: str) -> datetime:
@@ -260,7 +270,7 @@ class LoanScheduleApp:
         self.data_directory = data_directory
         self.data_visibility = visibility
         self.data_file = os.path.join(data_directory, f"loan_schedule_{visibility.lower()}.json")
-        self.data = {"loans": [], "payments": []}
+        self.data = {"loans": [], "payments": [], "purchases": [], "purchase_types": list(DEFAULT_PURCHASE_TYPES)}
         self.current_report_rows: list[dict[str, object]] = []
 
         self.load_data()
@@ -293,9 +303,22 @@ class LoanScheduleApp:
             loaded = json.load(handle)
         loans = loaded.get("loans", [])
         payments = loaded.get("payments", [])
-        if not isinstance(loans, list) or not isinstance(payments, list):
+        purchases = loaded.get("purchases", [])
+        purchase_types = loaded.get("purchase_types", list(DEFAULT_PURCHASE_TYPES))
+        if (
+            not isinstance(loans, list)
+            or not isinstance(payments, list)
+            or not isinstance(purchases, list)
+            or not isinstance(purchase_types, list)
+        ):
             raise ValueError("Data file has invalid structure.")
-        self.data = {"loans": loans, "payments": payments}
+        cleaned_types = [str(item).strip() for item in purchase_types if str(item).strip()]
+        self.data = {
+            "loans": loans,
+            "payments": payments,
+            "purchases": purchases,
+            "purchase_types": cleaned_types or list(DEFAULT_PURCHASE_TYPES),
+        }
 
     def save_data(self) -> None:
         """Persist current in-memory loan and payment data to disk."""
@@ -310,18 +333,21 @@ class LoanScheduleApp:
 
         self.tab_loans = ttk.Frame(self.notebook)
         self.tab_track = ttk.Frame(self.notebook)
+        self.tab_purchases = ttk.Frame(self.notebook)
         self.tab_reports = ttk.Frame(self.notebook)
         self.tab_ml = ttk.Frame(self.notebook)
         self.tab_charts = ttk.Frame(self.notebook)
 
         self.notebook.add(self.tab_loans, text="📕Loan Management")
         self.notebook.add(self.tab_track, text="📍Track Loan")
+        self.notebook.add(self.tab_purchases, text="🛒Purchases")
         self.notebook.add(self.tab_reports, text="📄Reports")
         self.notebook.add(self.tab_ml, text="🤖Machine Learning")
         self.notebook.add(self.tab_charts, text="📈Charts")
 
         self.build_loan_tab()
         self.build_track_tab()
+        self.build_purchases_tab()
         self.build_reports_tab()
         self.build_machine_learning_tab()
         self.build_charts_tab()
@@ -439,6 +465,358 @@ class LoanScheduleApp:
         self.tab_track.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
         table_frame.columnconfigure(0, weight=1)
+
+    def _purchase_types(self) -> list[str]:
+        """Return normalized purchase type values for the Purchases tab dropdown."""
+        values = [str(item).strip() for item in self.data.get("purchase_types", []) if str(item).strip()]
+        return values or list(DEFAULT_PURCHASE_TYPES)
+
+    def _set_purchase_types(self, raw_values: list[str]) -> None:
+        """Store unique purchase types while preserving the first-seen order."""
+        unique_values: list[str] = []
+        seen: set[str] = set()
+        for value in raw_values:
+            cleaned = str(value).strip()
+            if not cleaned:
+                continue
+            key = cleaned.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_values.append(cleaned)
+        self.data["purchase_types"] = unique_values or list(DEFAULT_PURCHASE_TYPES)
+
+    def refresh_purchase_type_values(self) -> None:
+        """Refresh purchase type combobox suggestions from persisted type values."""
+        if hasattr(self, "purchase_type_entry"):
+            self.purchase_type_entry.configure(values=self._purchase_types())
+
+    def edit_purchase_types(self) -> None:
+        """Edit purchase type options using a comma-separated dialog list."""
+        current = ", ".join(self._purchase_types())
+        entered = simpledialog.askstring(
+            "Edit Purchase Types",
+            "Enter purchase types separated by commas:",
+            initialvalue=current,
+        )
+        if entered is None:
+            return
+        normalized = entered.replace("\n", ",").replace(";", ",")
+        values = [item.strip() for item in normalized.split(",") if item.strip()]
+        if not values:
+            raise ValueError("At least one purchase type is required.")
+        self._set_purchase_types(values)
+        self.save_data()
+        self.refresh_purchase_type_values()
+
+    def build_purchases_tab(self) -> None:
+        """Build the Purchases tab fields, actions, and purchase table."""
+        form = ttk.LabelFrame(self.tab_purchases, text="Purchases")
+        form.grid(row=0, column=0, sticky="ew", padx=10, pady=8)
+
+        ttk.Label(form, text="Number").grid(row=0, column=0, sticky="e", padx=6, pady=6)
+        self.purchase_number_entry = ttk.Entry(form, width=24)
+        self.purchase_number_entry.grid(row=0, column=1, sticky="w", padx=6, pady=6)
+
+        ttk.Label(form, text="Description").grid(row=0, column=2, sticky="e", padx=6, pady=6)
+        self.purchase_description_entry = ttk.Entry(form, width=24)
+        self.purchase_description_entry.grid(row=0, column=3, sticky="w", padx=6, pady=6)
+
+        ttk.Label(form, text="Type").grid(row=0, column=4, sticky="e", padx=6, pady=6)
+        self.purchase_type_entry = ttk.Combobox(form, state="normal", width=22)
+        self.purchase_type_entry.grid(row=0, column=5, sticky="w", padx=6, pady=6)
+
+        ttk.Label(form, text="Purchase Date").grid(row=1, column=0, sticky="e", padx=6, pady=6)
+        self.purchase_date_entry = ttk.Entry(form, width=24)
+        self.purchase_date_entry.grid(row=1, column=1, sticky="w", padx=6, pady=6)
+        self.purchase_date_entry.insert(0, datetime.today().strftime(DATE_FORMAT))
+
+        ttk.Label(form, text="Purchase Price").grid(row=1, column=2, sticky="e", padx=6, pady=6)
+        self.purchase_price_entry = ttk.Entry(form, width=24)
+        self.purchase_price_entry.grid(row=1, column=3, sticky="w", padx=6, pady=6)
+
+        ttk.Label(form, text="VIN").grid(row=1, column=4, sticky="e", padx=6, pady=6)
+        self.purchase_vin_entry = ttk.Entry(form, width=22)
+        self.purchase_vin_entry.grid(row=1, column=5, sticky="w", padx=6, pady=6)
+
+        ttk.Label(form, text="QTY").grid(row=2, column=0, sticky="e", padx=6, pady=6)
+        self.purchase_qty_entry = ttk.Entry(form, width=24)
+        self.purchase_qty_entry.grid(row=2, column=1, sticky="w", padx=6, pady=6)
+
+        ttk.Button(form, text="Edit Types", command=lambda: self._safe_execute(self.edit_purchase_types)).grid(row=2, column=5, sticky="e", padx=6, pady=6)
+
+        button_row = ttk.Frame(form)
+        button_row.grid(row=3, column=0, columnspan=6, sticky="ew", padx=6, pady=6)
+        ttk.Button(button_row, text="Add", command=lambda: self._safe_execute(self.add_purchase)).grid(row=0, column=0, padx=4, pady=4)
+        ttk.Button(button_row, text="Update", command=lambda: self._safe_execute(self.update_purchase)).grid(row=0, column=1, padx=4, pady=4)
+        ttk.Button(button_row, text="Delete", command=lambda: self._safe_execute(self.delete_purchase)).grid(row=0, column=2, padx=4, pady=4)
+        ttk.Button(button_row, text="Search", command=lambda: self._safe_execute(self.search_purchases)).grid(row=0, column=3, padx=4, pady=4)
+        ttk.Button(button_row, text="Clear", command=lambda: self._safe_execute(self.clear_purchase_results)).grid(row=0, column=4, padx=4, pady=4)
+        ttk.Button(button_row, text="Export", command=lambda: self._safe_execute(self.export_purchases)).grid(row=0, column=5, padx=4, pady=4)
+        button_row.columnconfigure(6, weight=1)
+
+        table_frame = ttk.LabelFrame(self.tab_purchases, text="Purchase List")
+        table_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=8)
+        columns = ("number", "description", "type", "purchase_date", "purchase_price", "vin", "qty")
+        self.purchase_tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=14)
+        widths = (140, 260, 140, 150, 140, 200, 100)
+        for col, heading, width in zip(columns, PURCHASE_HEADERS, widths):
+            self.purchase_tree.heading(col, text=heading)
+            self.purchase_tree.column(col, width=width, anchor="w")
+        scroll = ttk.Scrollbar(table_frame, orient="vertical", command=self.purchase_tree.yview)
+        self.purchase_tree.configure(yscrollcommand=scroll.set)
+        self.purchase_tree.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
+        scroll.grid(row=0, column=1, sticky="ns", pady=6)
+        self.purchase_tree.bind("<<TreeviewSelect>>", self.on_purchase_selected)
+
+        self.tab_purchases.rowconfigure(1, weight=1)
+        self.tab_purchases.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
+        table_frame.columnconfigure(0, weight=1)
+
+        self.refresh_purchase_type_values()
+
+    def _filtered_purchases(
+        self,
+        number_filter: str = "",
+        description_filter: str = "",
+        type_filter: str = "",
+        date_filter: str = "",
+        price_filter: str = "",
+        vin_filter: str = "",
+        qty_filter: str = "",
+    ) -> list[dict[str, object]]:
+        """Return purchases matching the provided filter values."""
+        number_filter = number_filter.strip().lower()
+        description_filter = description_filter.strip().lower()
+        type_filter = type_filter.strip().lower()
+        date_filter = date_filter.strip().lower()
+        price_filter = price_filter.strip().lower()
+        vin_filter = vin_filter.strip().lower()
+        qty_filter = qty_filter.strip().lower()
+        rows: list[dict[str, object]] = []
+        for purchase in self.data["purchases"]:
+            number = str(purchase.get("number", ""))
+            description = str(purchase.get("description", ""))
+            purchase_type = str(purchase.get("type", ""))
+            purchase_date = str(purchase.get("purchase_date", ""))
+            purchase_price = f"{float(purchase.get('purchase_price', 0.0)):.2f}"
+            vin = str(purchase.get("vin", ""))
+            qty = str(int(purchase.get("qty", 0)))
+            if number_filter and number_filter not in number.lower():
+                continue
+            if description_filter and description_filter not in description.lower():
+                continue
+            if type_filter and type_filter not in purchase_type.lower():
+                continue
+            if date_filter and date_filter not in purchase_date.lower():
+                continue
+            if price_filter and price_filter not in purchase_price.lower():
+                continue
+            if vin_filter and vin_filter not in vin.lower():
+                continue
+            if qty_filter and qty_filter not in qty.lower():
+                continue
+            rows.append(purchase)
+        rows.sort(key=lambda item: str(item.get("number", "")).lower())
+        return rows
+
+    def refresh_purchases_tree(self, purchases: list[dict[str, object]]) -> None:
+        """Render the provided purchases into the Purchases treeview."""
+        self.purchase_tree.delete(*self.purchase_tree.get_children())
+        for purchase in purchases:
+            self.purchase_tree.insert(
+                "",
+                "end",
+                values=(
+                    purchase.get("number", ""),
+                    purchase.get("description", ""),
+                    purchase.get("type", ""),
+                    purchase.get("purchase_date", ""),
+                    f"{float(purchase.get('purchase_price', 0.0)):.2f}",
+                    purchase.get("vin", ""),
+                    int(purchase.get("qty", 0)),
+                ),
+            )
+
+    def parse_purchase_form(self) -> dict[str, object]:
+        """Parse and validate purchase form values into a normalized purchase record."""
+        number = self.purchase_number_entry.get().strip()
+        description = self.purchase_description_entry.get().strip()
+        purchase_type = self.purchase_type_entry.get().strip()
+        purchase_date = self.purchase_date_entry.get().strip()
+        purchase_price = float(self.purchase_price_entry.get().strip())
+        vin = self.purchase_vin_entry.get().strip()
+        qty = int(self.purchase_qty_entry.get().strip())
+
+        if not number:
+            raise ValueError("Number is required.")
+        if not description:
+            raise ValueError("Description is required.")
+        if not purchase_type:
+            raise ValueError("Type is required.")
+        parse_date(purchase_date, "Purchase Date")
+        if purchase_price < 0:
+            raise ValueError("Purchase Price cannot be negative.")
+        if qty <= 0:
+            raise ValueError("QTY must be greater than 0.")
+
+        current_types = self._purchase_types()
+        if purchase_type.lower() not in {item.lower() for item in current_types}:
+            current_types.append(purchase_type)
+            self._set_purchase_types(current_types)
+            self.refresh_purchase_type_values()
+
+        return {
+            "number": number,
+            "description": description,
+            "type": purchase_type,
+            "purchase_date": purchase_date,
+            "purchase_price": round(purchase_price, 2),
+            "vin": vin,
+            "qty": qty,
+        }
+
+    def add_purchase(self) -> None:
+        """Add a new purchase record."""
+        parsed = self.parse_purchase_form()
+        number_key = str(parsed["number"]).lower()
+        for purchase in self.data["purchases"]:
+            if str(purchase.get("number", "")).lower() == number_key:
+                raise ValueError("Purchase Number already exists. Use Update instead.")
+        self.data["purchases"].append(parsed)
+        self.save_data()
+        self.refresh_purchases_tree(self.data["purchases"])
+        messagebox.showinfo("Saved", "Purchase added successfully.")
+
+    def _selected_purchase_number(self) -> str:
+        """Return the selected purchase number from the Purchases tree."""
+        selected = self.purchase_tree.selection()
+        if not selected:
+            raise ValueError("Select a purchase row.")
+        values = self.purchase_tree.item(selected[0], "values")
+        if not values:
+            raise ValueError("Select a valid purchase row.")
+        return str(values[0]).strip()
+
+    def update_purchase(self) -> None:
+        """Update the selected purchase record."""
+        selected_number = self._selected_purchase_number()
+        parsed = self.parse_purchase_form()
+        selected_key = selected_number.lower()
+        updated_key = str(parsed["number"]).lower()
+
+        target_index = next(
+            (idx for idx, purchase in enumerate(self.data["purchases"]) if str(purchase.get("number", "")).lower() == selected_key),
+            None,
+        )
+        if target_index is None:
+            raise ValueError("Selected purchase no longer exists.")
+        if updated_key != selected_key:
+            for idx, purchase in enumerate(self.data["purchases"]):
+                if idx == target_index:
+                    continue
+                if str(purchase.get("number", "")).lower() == updated_key:
+                    raise ValueError("Purchase Number already exists. Use a unique Number.")
+
+        self.data["purchases"][target_index] = parsed
+        self.save_data()
+        self.refresh_purchases_tree(self.data["purchases"])
+        messagebox.showinfo("Updated", "Purchase updated successfully.")
+
+    def delete_purchase(self) -> None:
+        """Delete the selected purchase record after confirmation."""
+        selected_number = self._selected_purchase_number()
+        confirmed = messagebox.askokcancel("Confirm Delete", f"Delete purchase '{selected_number}'?", icon="warning")
+        if not confirmed:
+            return
+        selected_key = selected_number.lower()
+        self.data["purchases"] = [
+            purchase for purchase in self.data["purchases"] if str(purchase.get("number", "")).lower() != selected_key
+        ]
+        self.save_data()
+        self.refresh_purchases_tree(self.data["purchases"])
+        self.clear_purchase_entries()
+        messagebox.showinfo("Deleted", "Purchase deleted successfully.")
+
+    def search_purchases(self) -> None:
+        """Filter and display purchase rows matching current form filters."""
+        rows = self._filtered_purchases(
+            number_filter=self.purchase_number_entry.get(),
+            description_filter=self.purchase_description_entry.get(),
+            type_filter=self.purchase_type_entry.get(),
+            date_filter=self.purchase_date_entry.get(),
+            price_filter=self.purchase_price_entry.get(),
+            vin_filter=self.purchase_vin_entry.get(),
+            qty_filter=self.purchase_qty_entry.get(),
+        )
+        self.refresh_purchases_tree(rows)
+
+    def clear_purchase_entries(self, *, include_default_date: bool = True) -> None:
+        """Clear purchase form entries and optionally reset purchase date to today."""
+        self.purchase_number_entry.delete(0, tk.END)
+        self.purchase_description_entry.delete(0, tk.END)
+        self.purchase_type_entry.delete(0, tk.END)
+        self.purchase_date_entry.delete(0, tk.END)
+        self.purchase_price_entry.delete(0, tk.END)
+        self.purchase_vin_entry.delete(0, tk.END)
+        self.purchase_qty_entry.delete(0, tk.END)
+        if include_default_date:
+            self.purchase_date_entry.insert(0, datetime.today().strftime(DATE_FORMAT))
+
+    def clear_purchase_results(self) -> None:
+        """Clear purchase filters and show all purchase rows."""
+        self.clear_purchase_entries()
+        self.refresh_purchases_tree(self.data["purchases"])
+
+    def on_purchase_selected(self, _event=None) -> None:
+        """Populate purchase form fields from the selected purchase row."""
+        selected = self.purchase_tree.selection()
+        if not selected:
+            return
+        values = self.purchase_tree.item(selected[0], "values")
+        if not values:
+            return
+        self.clear_purchase_entries(include_default_date=False)
+        self.purchase_number_entry.insert(0, str(values[0]))
+        self.purchase_description_entry.insert(0, str(values[1]))
+        self.purchase_type_entry.insert(0, str(values[2]))
+        self.purchase_date_entry.insert(0, str(values[3]))
+        self.purchase_price_entry.insert(0, str(values[4]))
+        self.purchase_vin_entry.insert(0, str(values[5]))
+        self.purchase_qty_entry.insert(0, str(values[6]))
+
+    def export_purchases(self) -> None:
+        """Export filtered purchase rows to CSV or XLSX."""
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("Excel files", "*.xlsx")],
+        )
+        if not file_path:
+            return
+        rows = self._filtered_purchases(
+            number_filter=self.purchase_number_entry.get(),
+            description_filter=self.purchase_description_entry.get(),
+            type_filter=self.purchase_type_entry.get(),
+            date_filter=self.purchase_date_entry.get(),
+            price_filter=self.purchase_price_entry.get(),
+            vin_filter=self.purchase_vin_entry.get(),
+            qty_filter=self.purchase_qty_entry.get(),
+        )
+        serialized = [
+            [
+                row.get("number", ""),
+                row.get("description", ""),
+                row.get("type", ""),
+                row.get("purchase_date", ""),
+                row.get("purchase_price", 0.0),
+                row.get("vin", ""),
+                row.get("qty", 0),
+            ]
+            for row in rows
+        ]
+        self._write_table(file_path, PURCHASE_HEADERS, serialized)
+        messagebox.showinfo("Export Complete", f"Purchase rows exported to {file_path}")
 
     def build_reports_tab(self) -> None:
         """Build the Reports tab filters, action buttons, result tree, and summary panel."""
@@ -619,8 +997,10 @@ class LoanScheduleApp:
     def refresh_all(self) -> None:
         """Refresh all tab views and suggestion sources from current data."""
         self.refresh_autosuggestion_values()
+        self.refresh_purchase_type_values()
         self.refresh_loan_tree(self.data["loans"])
         self.refresh_track_tree()
+        self.refresh_purchases_tree(self.data["purchases"])
         self.run_loan_history_report()
         self.refresh_ml_tab()
         self.refresh_chart_details()
