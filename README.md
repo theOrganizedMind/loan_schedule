@@ -127,17 +127,25 @@ Features
   - Display Chart
   - Clear
 - Search auto-populates chart Start Date and End Date based on selected Bank Name/Loan Number matches.
+- When **Chart Option = Purchases**, Start Date defaults to the earliest Purchase Date and End Date defaults to the latest Purchase Date so all purchase rows are included by default.
 - Search updates Chart View and Chart Details to only show rows matching the selected Bank Name and/or Loan Number.
 - Display Chart opens Matplotlib in a separate figure window.
 - Chart output includes distinct executive dashboard layouts by **Chart Option**:
   - **Overview**: top remaining balances (bar), payment status distribution (pie), cumulative payment/interest trend (line), and loan amount vs remaining (bar)
   - **By Bank**: exposure by bank (grouped bar), payments vs interest by bank (line), remaining-balance share (pie), and payment status counts by bank (stacked bar)
   - **By Loan**: remaining-balance trajectory by payment number (line), total payments by loan (bar), total interest paid by loan (bar), and remaining-balance share (pie)
+  - **Purchases**: purchase spend by type (bar), purchase spend distribution by type (pie), cumulative purchase spend trend (line), and total quantity by type (bar)
 - In-app "Chart View" shows KPI totals/averages in Times New Roman, size 12, including:
   - Total Payments
   - Total Interest Paid
+- For **Purchases**, the in-app "Chart View" summary is generated dynamically for all configured purchase types and includes per-type:
+  - Total Number of `<Type>`
+  - Total `<Type>` Purchase Price
+  - Average `<Type>` Purchase Price
+- Purchases KPI summary is shown in the Chart tab summary area (not overlaid on the Matplotlib figure).
 - Chart details tree columns:
   - Bank Name, Loan Number, Loan Amount, Remaining Balance, Remaining Duration
+  - For **Purchases**: Number, Description, Type, Purchase Date, Purchase Price, VIN, QTY
 
 Data Storage Mode
 -----------------

@@ -66,7 +66,7 @@ REPORT_HEADERS = [
     "Loan Amount",
     "Remaining Balance",
 ]
-CHART_OPTIONS = ("Overview", "By Bank", "By Loan")
+CHART_OPTIONS = ("Overview", "By Bank", "By Loan", "Purchases")
 ML_OPTION_HEADERS = ("Extra/Month", "Months Saved", "Interest Saved", "New Payoff Date")
 DEFAULT_PURCHASE_TYPES = ["Truck", "Dumpsters", "Equipment"]
 
@@ -941,6 +941,7 @@ class LoanScheduleApp:
         self.chart_option_combo = ttk.Combobox(controls, values=CHART_OPTIONS, state="readonly", width=18)
         self.chart_option_combo.grid(row=0, column=5, sticky="w", padx=6, pady=6)
         self.chart_option_combo.set("Overview")
+        self.chart_option_combo.bind("<<ComboboxSelected>>", lambda _event: self._safe_execute(self.on_chart_option_changed))
 
         ttk.Label(controls, text="Start Date").grid(row=1, column=0, sticky="e", padx=6, pady=6)
         self.chart_start_entry = ttk.Entry(controls, width=22)
@@ -972,13 +973,9 @@ class LoanScheduleApp:
 
         details_frame = ttk.LabelFrame(self.tab_charts, text="Chart Details")
         details_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 8))
-        columns = ("bank_name", "loan_number", "loan_amount", "remaining_balance", "remaining_duration")
-        self.chart_tree = ttk.Treeview(details_frame, columns=columns, show="headings", height=8)
-        headings = ("Bank Name", "Loan Number", "Loan Amount", "Remaining Balance", "Remaining Duration")
-        widths = (220, 150, 140, 160, 170)
-        for col, heading, width in zip(columns, headings, widths):
-            self.chart_tree.heading(col, text=heading)
-            self.chart_tree.column(col, width=width, anchor="w")
+        self.chart_tree = ttk.Treeview(details_frame, columns=(), show="headings", height=8)
+        self.chart_tree_mode = ""
+        self._set_chart_tree_mode("loan")
         chart_scroll = ttk.Scrollbar(details_frame, orient="vertical", command=self.chart_tree.yview)
         self.chart_tree.configure(yscrollcommand=chart_scroll.set)
         self.chart_tree.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
@@ -1730,8 +1727,79 @@ class LoanScheduleApp:
             filtered.append(row)
         return filtered
 
+    def _set_chart_tree_mode(self, mode: str) -> None:
+        """Configure chart detail columns for loan or purchase chart modes."""
+        if self.chart_tree_mode == mode:
+            return
+        if mode == "purchase":
+            columns = ("number", "description", "type", "purchase_date", "purchase_price", "vin", "qty")
+            headings = ("Number", "Description", "Type", "Purchase Date", "Purchase Price", "VIN", "QTY")
+            widths = (120, 230, 120, 130, 130, 180, 80)
+        else:
+            columns = ("bank_name", "loan_number", "loan_amount", "remaining_balance", "remaining_duration")
+            headings = ("Bank Name", "Loan Number", "Loan Amount", "Remaining Balance", "Remaining Duration")
+            widths = (220, 150, 140, 160, 170)
+        self.chart_tree.configure(columns=columns)
+        for col, heading, width in zip(columns, headings, widths):
+            self.chart_tree.heading(col, text=heading)
+            self.chart_tree.column(col, width=width, anchor="w")
+        self.chart_tree_mode = mode
+
+    def _purchase_date_bounds(self) -> tuple[datetime, datetime] | None:
+        """Return min/max purchase dates from persisted purchases, if available."""
+        purchase_dates = [
+            parse_date(str(purchase.get("purchase_date", "")), "Purchase Date")
+            for purchase in self.data["purchases"]
+        ]
+        if not purchase_dates:
+            return None
+        return min(purchase_dates), max(purchase_dates)
+
+    def _set_purchase_chart_default_dates(self) -> None:
+        """Set chart date controls to the full purchase date range."""
+        bounds = self._purchase_date_bounds()
+        self.chart_start_entry.delete(0, tk.END)
+        self.chart_end_entry.delete(0, tk.END)
+        if bounds is None:
+            today = datetime.today().strftime(DATE_FORMAT)
+            self.chart_start_entry.insert(0, today)
+            self.chart_end_entry.insert(0, today)
+            return
+        start_date, end_date = bounds
+        self.chart_start_entry.insert(0, start_date.strftime(DATE_FORMAT))
+        self.chart_end_entry.insert(0, end_date.strftime(DATE_FORMAT))
+
+    def _chart_filtered_purchases(self) -> list[dict[str, object]]:
+        """Return purchases filtered by chart date range."""
+        start_date = parse_date(self.chart_start_entry.get().strip(), "Chart Start Date").date()
+        end_date = parse_date(self.chart_end_entry.get().strip(), "Chart End Date").date()
+        if end_date < start_date:
+            raise ValueError("Chart end date must be after or equal to chart start date.")
+
+        filtered: list[dict[str, object]] = []
+        for purchase in self.data["purchases"]:
+            purchase_date = parse_date(str(purchase.get("purchase_date", "")), "Purchase Date").date()
+            if purchase_date < start_date or purchase_date > end_date:
+                continue
+            filtered.append(purchase)
+        filtered.sort(key=lambda row: (str(row.get("purchase_date", "")), str(row.get("number", "")).lower()))
+        return filtered
+
+    def on_chart_option_changed(self) -> None:
+        """Refresh chart view behavior when chart option selection changes."""
+        if self.chart_option_combo.get().strip() == "Purchases":
+            self._set_purchase_chart_default_dates()
+        self.refresh_chart_details()
+
     def search_chart_details(self) -> None:
         """Apply bank/loan chart search, auto-set date bounds, and refresh chart views."""
+        chart_option = self.chart_option_combo.get().strip() or "Overview"
+        if chart_option == "Purchases":
+            if not self.chart_start_entry.get().strip() or not self.chart_end_entry.get().strip():
+                self._set_purchase_chart_default_dates()
+            self.refresh_chart_details()
+            return
+
         bank_filter = self.chart_bank_entry.get().strip().lower()
         loan_filter = self.chart_loan_entry.get().strip().lower()
         matching_loans = [
@@ -1751,8 +1819,31 @@ class LoanScheduleApp:
 
     def refresh_chart_details(self) -> None:
         """Refresh chart details table and KPI text using current chart filters."""
-        rows = self._chart_filtered_rows()
         self.chart_tree.delete(*self.chart_tree.get_children())
+        chart_option = self.chart_option_combo.get().strip() or "Overview"
+
+        if chart_option == "Purchases":
+            purchases = self._chart_filtered_purchases()
+            self._set_chart_tree_mode("purchase")
+            for purchase in purchases:
+                self.chart_tree.insert(
+                    "",
+                    "end",
+                    values=(
+                        purchase.get("number", ""),
+                        purchase.get("description", ""),
+                        purchase.get("type", ""),
+                        purchase.get("purchase_date", ""),
+                        f"{float(purchase.get('purchase_price', 0.0)):.2f}",
+                        purchase.get("vin", ""),
+                        int(purchase.get("qty", 0)),
+                    ),
+                )
+            self._update_purchase_chart_kpi(purchases)
+            return
+
+        rows = self._chart_filtered_rows()
+        self._set_chart_tree_mode("loan")
         for row in rows:
             self.chart_tree.insert(
                 "",
@@ -1766,6 +1857,53 @@ class LoanScheduleApp:
                 ),
             )
         self._update_chart_kpi(rows)
+
+    def _update_purchase_chart_kpi(self, purchases: list[dict[str, object]]) -> None:
+        """Update Purchases KPI summary text from the supplied chart-filtered rows."""
+        kpi = self._build_purchase_type_kpi_text(purchases)
+        self.chart_kpi_text.configure(state="normal")
+        self.chart_kpi_text.delete("1.0", tk.END)
+        self.chart_kpi_text.insert(tk.END, kpi)
+        self.chart_kpi_text.configure(state="disabled")
+
+    def _build_purchase_type_kpi_text(self, purchases: list[dict[str, object]]) -> str:
+        """Build Purchases KPI text for all configured and observed purchase types."""
+        totals_by_type: dict[str, dict[str, float]] = {}
+        configured_types = self._purchase_types()
+        configured_lookup = {value.lower(): value for value in configured_types}
+
+        ordered_type_labels = list(configured_types)
+        seen_labels = {label.lower() for label in ordered_type_labels}
+
+        for purchase in purchases:
+            raw_type = str(purchase.get("type", "")).strip()
+            if not raw_type:
+                raw_type = "Unknown"
+            normalized_key = raw_type.lower()
+            purchase_type = configured_lookup.get(normalized_key, raw_type)
+            if purchase_type.lower() not in seen_labels:
+                ordered_type_labels.append(purchase_type)
+                seen_labels.add(purchase_type.lower())
+            qty = int(purchase.get("qty", 0))
+            price = float(purchase.get("purchase_price", 0.0))
+            if purchase_type not in totals_by_type:
+                totals_by_type[purchase_type] = {"qty": 0.0, "price": 0.0}
+            totals_by_type[purchase_type]["qty"] += qty
+            totals_by_type[purchase_type]["price"] += price
+
+        lines: list[str] = []
+        for purchase_type in ordered_type_labels:
+            totals = totals_by_type.get(purchase_type, {"qty": 0.0, "price": 0.0})
+            qty = int(totals["qty"])
+            total_price = float(totals["price"])
+            average_price = (total_price / qty) if qty else 0.0
+            lines.append(f"Total Number of {purchase_type}: {qty}")
+            lines.append(f"Total {purchase_type} Purchase Price: ${total_price:,.2f}")
+            lines.append(f"Average {purchase_type} Purchase Price: ${average_price:,.2f}")
+
+        if not lines:
+            return "No purchase type data found for the selected range."
+        return "\n".join(lines)
 
     def _update_chart_kpi(self, rows: list[dict[str, object]]) -> None:
         """Update chart KPI summary text from the supplied chart-filtered rows."""
@@ -1870,13 +2008,83 @@ class LoanScheduleApp:
         """Render and display the chart figure in a separate Matplotlib window."""
         if plt is None:
             raise ImportError("matplotlib is required for chart display. Install matplotlib to use charts.")
+        chart_option = self.chart_option_combo.get().strip() or "Overview"
+        if chart_option == "Purchases":
+            purchases = self._chart_filtered_purchases()
+            if not purchases:
+                raise ValueError("No purchase data matches the selected filters.")
+            filter_start = parse_date(self.chart_start_entry.get().strip(), "Chart Start Date")
+            filter_end = parse_date(self.chart_end_entry.get().strip(), "Chart End Date")
+
+            purchase_totals_by_type: dict[str, float] = {}
+            purchase_qty_by_type: dict[str, int] = {}
+            for purchase in purchases:
+                purchase_type = str(purchase.get("type", "Unknown")).strip() or "Unknown"
+                purchase_totals_by_type[purchase_type] = purchase_totals_by_type.get(purchase_type, 0.0) + float(purchase.get("purchase_price", 0.0))
+                purchase_qty_by_type[purchase_type] = purchase_qty_by_type.get(purchase_type, 0) + int(purchase.get("qty", 0))
+
+            sorted_purchases = sorted(
+                purchases,
+                key=lambda row: (
+                    parse_date(str(row.get("purchase_date", "")), "Purchase Date"),
+                    str(row.get("number", "")).lower(),
+                ),
+            )
+            cumulative_dates: list[datetime] = []
+            cumulative_spend: list[float] = []
+            running_spend = 0.0
+            for purchase in sorted_purchases:
+                running_spend += float(purchase.get("purchase_price", 0.0))
+                cumulative_dates.append(parse_date(str(purchase.get("purchase_date", "")), "Purchase Date"))
+                cumulative_spend.append(running_spend)
+
+            figure = plt.figure(figsize=(14, 9))
+            grid = figure.add_gridspec(2, 2, height_ratios=[1, 1.2])
+
+            purchase_types = sorted(purchase_totals_by_type.keys(), key=str.lower)
+            x_axis = list(range(len(purchase_types)))
+
+            ax1 = figure.add_subplot(grid[0, 0])
+            ax1.bar(x_axis, [purchase_totals_by_type[p_type] for p_type in purchase_types], color="#4C78A8")
+            ax1.set_title("Purchase Spend by Type")
+            ax1.set_xticks(x_axis, purchase_types, rotation=25, ha="right")
+            ax1.set_ylabel("Purchase Price")
+            ax1.grid(True, axis="y", alpha=0.3)
+
+            ax2 = figure.add_subplot(grid[0, 1])
+            pie_values = [purchase_totals_by_type[p_type] for p_type in purchase_types]
+            if sum(pie_values) > 0:
+                ax2.pie(pie_values, labels=purchase_types, autopct="%1.1f%%", startangle=90)
+            else:
+                ax2.text(0.5, 0.5, "No purchase totals in range", ha="center", va="center")
+            ax2.set_title("Purchase Spend Distribution")
+
+            ax3 = figure.add_subplot(grid[1, 0])
+            ax3.plot(cumulative_dates, cumulative_spend, marker="o", color="#59A14F")
+            ax3.set_title("Cumulative Purchase Spend Trend")
+            ax3.set_xlabel("Purchase Date")
+            ax3.set_ylabel("Cumulative Spend")
+            ax3.grid(True, alpha=0.3)
+
+            ax4 = figure.add_subplot(grid[1, 1])
+            ax4.bar(x_axis, [purchase_qty_by_type[p_type] for p_type in purchase_types], color="#F58518")
+            ax4.set_title("Total Quantity by Type")
+            ax4.set_xticks(x_axis, purchase_types, rotation=25, ha="right")
+            ax4.set_ylabel("Quantity")
+            ax4.grid(True, axis="y", alpha=0.3)
+
+            figure.suptitle(f"Purchases Dashboard ({filter_start.date()} to {filter_end.date()})", fontsize=14, fontweight="bold")
+            figure.tight_layout(rect=(0, 0, 1, 0.95))
+            plt.show(block=False)
+            self.refresh_chart_details()
+            return
+
         rows = self._chart_filtered_rows()
         if not rows:
             raise ValueError("No chart data matches the selected filters.")
         filter_start = parse_date(self.chart_start_entry.get().strip(), "Chart Start Date")
         filter_end = parse_date(self.chart_end_entry.get().strip(), "Chart End Date")
         status_filter = self.chart_status_combo.get().strip()
-        chart_option = self.chart_option_combo.get().strip() or "Overview"
         total_loan_amount = sum(float(row["loan_amount"]) for row in rows)
         total_remaining = sum(float(row["remaining_balance"]) for row in rows)
         payment_rows = self._chart_payment_rows(rows, filter_start.date(), filter_end.date(), status_filter)
